@@ -2,6 +2,23 @@ import telebot
 import requests
 import base64
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+# --- Fake HTTP server for Render Free ---
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def run_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), DummyHandler)
+    server.serve_forever()
+
+threading.Thread(target=run_server, daemon=True).start()
+# ---------------------------------------
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 GEMINI_KEY = os.environ["GEMINI_KEY"]
