@@ -1,57 +1,52 @@
 import telebot
 import requests
-import base64
 import os
-import time
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 REPLICATE_API_TOKEN = os.environ["REPLICATE_API_TOKEN"]
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-HEADERS = {
-    "Authorization": f"Token {REPLICATE_API_TOKEN}",
-    "Content-Type": "application/json"
-}
-
-MODEL = "black-forest-labs/flux-dev"
-
-
-# ===== Fake Web Server for Render =====
+# =======================
+# Fake web server for Render
+# =======================
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Nano-Banana bot is running")
+        self.wfile.write(b"Nano Banana bot alive")
 
-
-def run_web():
+def start_web():
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), Handler)
     server.serve_forever()
 
+# =======================
+# Replicate (Nano Banana style)
+# =======================
+HEADERS = {
+    "Authorization": f"Token {REPLICATE_API_TOKEN}",
+    "Content-Type": "application/json"
+}
 
-# ===== Replicate Image Generation =====
 def generate_image(image_url):
-    data = {
-        "version": "latest",
-        "input": {
-            "image": image_url,
-            "prompt": "cinematic black and white dramatic portrait, ultra realistic, sharp details, nano banana style, studio lighting, 8k"
-        }
-    }
-
     r = requests.post(
         "https://api.replicate.com/v1/predictions",
         headers=HEADERS,
-        json=data
+        json={
+            "version": "black-forest-labs/flux-dev",
+            "input": {
+                "image": image_url,
+                "prompt": "cinematic black and white dramatic portrait, ultra realistic, nano banana style, studio lighting, 8k"
+            }
+        }
     )
 
-    pred = r.json()
-    pid = pred["id"]
+    pid = r.json()["id"]
 
     while True:
         res = requests.get(
@@ -67,23 +62,26 @@ def generate_image(image_url):
 
         time.sleep(2)
 
-
+# =======================
+# Telegram
+# =======================
 @bot.message_handler(content_types=["photo"])
 def handle_photo(message):
     file_id = message.photo[-1].file_id
     file_info = bot.get_file(file_id)
-    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+    url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
 
-    bot.send_message(message.chat.id, "🍌 Nano-Banana генерирует…")
+    bot.send_message(message.chat.id, "🍌 Nano-Banana работает…")
 
     try:
-        img_url = generate_image(file_url)
-        bot.send_photo(message.chat.id, img_url)
+        img = generate_image(url)
+        bot.send_photo(message.chat.id, img)
     except Exception as e:
-        bot.send_message(message.chat.id, f"Ошибка: {e}")
+        bot.send_message(message.chat.id, str(e))
 
-
-# ===== Start everything =====
+# =======================
+# Start
+# =======================
 if __name__ == "__main__":
-    threading.Thread(target=run_web).start()
+    threading.Thread(target=start_web).start()
     bot.infinity_polling()
