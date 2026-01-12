@@ -5,7 +5,7 @@ import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# --- Fake HTTP server for Render Free ---
+# ------------------ Fake HTTP server (Render Free) ------------------
 class DummyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -18,12 +18,13 @@ def run_server():
     server.serve_forever()
 
 threading.Thread(target=run_server, daemon=True).start()
-# --------------------------------------
+# -------------------------------------------------------------------
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 GEMINI_KEY = os.environ["GEMINI_KEY"]
 
 bot = telebot.TeleBot(BOT_TOKEN)
+
 
 def nano_banana_edit(image_bytes):
     img64 = base64.b64encode(image_bytes).decode()
@@ -36,21 +37,34 @@ def nano_banana_edit(image_bytes):
             "mimeType": "image/jpeg",
             "data": img64
         },
-        "prompt": "cinematic black and white portrait, dramatic lighting, realistic face, high detail"
+        "prompt": "cinematic black and white portrait, dramatic lighting, high detail, realistic face"
     }
 
-    r = requests.post(url, json=payload, timeout=60)
-    j = r.json()
+    r = requests.post(url, json=payload, timeout=90)
+
+    if r.status_code != 200 or not r.text:
+        return None, f"HTTP {r.status_code}: {r.text}"
+
+    try:
+        j = r.json()
+    except:
+        return None, f"Invalid response from Gemini:\n{r.text}"
 
     if "image" not in j:
         return None, j
 
-    return base64.b64decode(j["image"]["data"]), None
+    try:
+        return base64.b64decode(j["image"]["data"]), None
+    except:
+        return None, "Invalid image data returned by Gemini"
 
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    bot.send_message(message.chat.id, "Отправь фото — я превращу его в кинематографичный чёрно-белый портрет 📸")
+    bot.send_message(
+        message.chat.id,
+        "📸 Отправь фото — я превращу его в кинематографичный чёрно-белый портрет"
+    )
 
 
 @bot.message_handler(content_types=["photo"])
@@ -72,5 +86,6 @@ def handle_photo(message):
 
     except Exception as e:
         bot.send_message(message.chat.id, f"Ошибка: {e}")
+
 
 bot.infinity_polling()
