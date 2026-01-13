@@ -2,46 +2,55 @@ import telebot
 import requests
 import os
 import time
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 REPLICATE_API_TOKEN = os.environ["REPLICATE_API_TOKEN"]
 
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 
-# ================== Fake Web Server (Render hack) ==================
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Nano Banana Bot Alive")
+WEBHOOK_URL = "https://nano-banana-bot.onrender.com/webhook"
 
-def start_web():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), Handler)
-    server.serve_forever()
+user_style = {}
 
-threading.Thread(target=start_web, daemon=True).start()
-
-# ================== Replicate ==================
 HEADERS = {
     "Authorization": f"Token {REPLICATE_API_TOKEN}",
     "Content-Type": "application/json"
 }
 
-MODEL = "black-forest-labs/flux-dev"
+# ---------- MENU ----------
+def main_menu():
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.row("🎥 Кино", "🖤 Ч/Б")
+    markup.row("🎨 Арт", "👤 Сохранить лицо")
+    return markup
 
-def generate_image(image_url):
+# ---------- WEBHOOK SETUP ----------
+@bot.message_handler(commands=["start"])
+def start(message):
+    bot.send_message(
+        message.chat.id,
+        "Выбери стиль, потом пришли фото:",
+        reply_markup=main_menu()
+    )
+
+@bot.message_handler(func=lambda m: m.text in ["🎥 Кино", "🖤 Ч/Б", "🎨 Арт", "👤 Сохранить лицо"])
+def set_style(message):
+    styles = {
+        "🎥 Кино": "cinematic movie lighting, dramatic shadows",
+        "🖤 Ч/Б": "black and white dramatic portrait",
+        "🎨 Арт": "artistic painterly style",
+        "👤 Сохранить лицо": "realistic portrait, preserve identity"
+    }
+    user_style[message.chat.id] = styles[message.text]
+    bot.send_message(message.chat.id, "Стиль сохранён. Теперь пришли фото 📸")
+
+# ---------- IMAGE GENERATION ----------
+def generate(image_url, style):
     payload = {
         "version": "black-forest-labs/flux-dev",
         "input": {
             "image": image_url,
-            "prompt": (
-                "cinematic black and white portrait, dramatic studio lighting, "
-                "ultra realistic, high detail, preserve the original person's face, "
-                "same identity, same age, same gender, no change of person"
-            ),
+            "prompt": style + ", preserve face, same person, ultra detailed",
             "image_strength": 0.8,
             "guidance_scale": 7,
             "num_inference_steps": 35
@@ -70,26 +79,36 @@ def generate_image(image_url):
 
         time.sleep(2)
 
-# ================== Telegram ==================
-@bot.message_handler(commands=["start"])
-def start(message):
-    bot.send_message(
-        message.chat.id,
-        "📸 Пришли фото — я превращу его в Nano-Banana портрет с сохранением лица"
-    )
-
 @bot.message_handler(content_types=["photo"])
 def handle_photo(message):
+    style = user_style.get(message.chat.id, "cinematic portrait")
+
     file_id = message.photo[-1].file_id
     file_info = bot.get_file(file_id)
     image_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
 
-    bot.send_message(message.chat.id, "🍌 Создаю портрет…")
+    bot.send_message(message.chat.id, "🍌 Генерирую...")
 
     try:
-        img = generate_image(image_url)
+        img = generate(image_url, style)
         bot.send_photo(message.chat.id, img)
     except Exception as e:
         bot.send_message(message.chat.id, f"Ошибка: {e}")
 
-bot.infinity_polling()
+# ---------- WEBHOOK ENDPOINT ----------
+from flask import Flask, request
+
+app = Flask(__name__)
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "ok", 200
+
+# ---------- START ----------
+if __name__ == "__main__":
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
