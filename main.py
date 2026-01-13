@@ -1,121 +1,79 @@
-import telebot
 import os
+import telebot
 import requests
-import time
+import base64
 from flask import Flask, request
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-REPLICATE_KEY = os.environ["REPLICATE_API_TOKEN"]
+GEMINI_KEY = os.environ["GEMINI_KEY"]
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-HEADERS = {
-    "Authorization": f"Token {REPLICATE_KEY}",
-    "Content-Type": "application/json"
-}
-
-USER_STATE = {}
-
-STYLES = {
-    "🎥 Кино": "cinematic lighting, dramatic shadows, film look",
-    "🖤 ЧБ": "black and white, high contrast, cinematic portrait",
-    "🎨 Арт": "digital art, ultra detailed, artistic",
-    "📸 Реализм": "photorealistic, natural lighting"
-}
-
-# =========================
-# Telegram handlers
-# =========================
+# --- TELEGRAM HANDLERS ---
 
 @bot.message_handler(commands=["start"])
-def start(m):
-    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for k in STYLES:
-        kb.add(k)
-    kb.add("✍️ Свой промт")
+def start(message):
+    bot.send_message(
+        message.chat.id,
+        "🍌 *Nano-Banana Bot*\n\n"
+        "Отправь фото и напиши промт.\n"
+        "Пример: _Сделай кинематографичный чёрно-белый портрет_",
+        parse_mode="Markdown"
+    )
 
-    bot.send_message(m.chat.id, "Выбери стиль или введи свой промт:", reply_markup=kb)
-
-@bot.message_handler(func=lambda m: m.text in STYLES)
-def style(m):
-    USER_STATE[m.chat.id] = {"prompt": STYLES[m.text]}
-    bot.send_message(m.chat.id, "Отправь фото.")
-
-@bot.message_handler(func=lambda m: m.text == "✍️ Свой промт")
-def custom_prompt(m):
-    USER_STATE[m.chat.id] = {"custom": True}
-    bot.send_message(m.chat.id, "Напиши промт:")
-
-@bot.message_handler(func=lambda m: USER_STATE.get(m.chat.id, {}).get("custom") and not m.content_type == "photo")
-def save_prompt(m):
-    USER_STATE[m.chat.id]["prompt"] = m.text
-    USER_STATE[m.chat.id]["custom"] = False
-    bot.send_message(m.chat.id, "Теперь отправь фото.")
+@bot.message_handler(func=lambda m: True, content_types=["text"])
+def save_prompt(message):
+    bot.send_message(message.chat.id, "Теперь отправь фото 📸")
+    bot.user_prompt = message.text
 
 @bot.message_handler(content_types=["photo"])
-def photo(m):
-    if m.chat.id not in USER_STATE or "prompt" not in USER_STATE[m.chat.id]:
-        bot.send_message(m.chat.id, "Сначала выбери стиль или введи промт.")
-        return
-
-    bot.send_message(m.chat.id, "⏳ Генерирую...")
-
-    file_id = m.photo[-1].file_id
-    file_info = bot.get_file(file_id)
-    image_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
-
+def handle_photo(message):
     try:
-        out = generate(image_url, USER_STATE[m.chat.id]["prompt"])
-        bot.send_photo(m.chat.id, out)
-    except Exception as e:
-        bot.send_message(m.chat.id, f"Ошибка генерации: {e}")
+        prompt = getattr(bot, "user_prompt", "Make a cinematic nano-banana style portrait")
 
-# =========================
-# Nano-Banana генератор
-# =========================
+        file_id = message.photo[-1].file_id
+        file_info = bot.get_file(file_id)
+        file = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}")
 
-def generate(image_url, style):
-    payload = {
-        "model": "black-forest-labs/flux-schnell",
-        "input": {
-            "image": image_url,
-            "prompt": f"{style}, nano banana style, preserve face, same person, ultra detailed portrait",
-            "strength": 0.75
+        img64 = base64.b64encode(file.content).decode()
+
+        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash-image:generateContent?key={GEMINI_KEY}"
+
+        data = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": img64
+                    }}
+                ]
+            }]
         }
-    }
 
-    r = requests.post("https://api.replicate.com/v1/predictions", headers=HEADERS, json=payload)
-    data = r.json()
+        r = requests.post(url, json=data)
+        r.raise_for_status()
 
-    if "id" not in data:
-        raise Exception(str(data))
+        result = r.json()
+        img = result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
 
-    pid = data["id"]
+        bot.send_photo(message.chat.id, base64.b64decode(img))
 
-    while True:
-        res = requests.get(f"https://api.replicate.com/v1/predictions/{pid}", headers=HEADERS).json()
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
 
-        if res["status"] == "succeeded":
-            return res["output"][0]
+# --- WEBHOOK ---
 
-        if res["status"] == "failed":
-            raise Exception("Nano-Banana generation failed")
-
-        time.sleep(2)
-
-# =========================
-# Webhook
-# =========================
-
-@app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
+@app.route("/webhook/" + BOT_TOKEN, methods=["POST"])
 def webhook():
-    bot.process_new_updates([telebot.types.Update.de_json(request.stream.read().decode("utf-8"))])
+    update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
+    bot.process_new_updates([update])
     return "OK", 200
 
 @app.route("/")
 def home():
-    return "Nano Banana bot is running"
+    return "Nano-Banana Bot is alive 🍌"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
