@@ -1,106 +1,89 @@
-import telebot
-import requests
 import os
-import time
+import requests
+import telebot
+import replicate
+from flask import Flask, request
+from telebot.types import Update
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-REPLICATE_KEY = os.environ["REPLICATE_KEY"]
+REPLICATE_KEY = os.environ["REPLICATE_API_TOKEN"]
 
 bot = telebot.TeleBot(BOT_TOKEN)
+replicate_client = replicate.Client(api_token=REPLICATE_KEY)
 
-headers = {
-    "Authorization": f"Token {REPLICATE_KEY}",
-    "Content-Type": "application/json"
-}
+user_prompts = {}
 
-user_prompt = {}
+# -------------------
+# Telegram Handlers
+# -------------------
 
 @bot.message_handler(commands=["start"])
-def start(msg):
-    bot.send_message(
-        msg.chat.id,
+def start(message):
+    bot.send_message(message.chat.id,
         "🍌 Nano-Banana\n\n"
         "1️⃣ Напиши, как изменить фото\n"
-        "2️⃣ Потом отправь фото"
+        "2️⃣ Потом отправь изображение\n\n"
+        "Например:\n«Сделай кинематографичный чёрно-белый портрет»"
     )
 
 @bot.message_handler(content_types=["text"])
-def save_prompt(msg):
-    user_prompt[msg.chat.id] = msg.text
-    bot.send_message(msg.chat.id, "📸 Теперь отправь фото")
-
-def upload_to_telegraph(img):
-    r = requests.post("https://telegra.ph/upload", files={"file": ("img.jpg", img)})
-    j = r.json()
-    return "https://telegra.ph" + j[0]["src"]
+def handle_text(message):
+    user_prompts[message.chat.id] = message.text
+    bot.send_message(message.chat.id, "✅ Принято. Теперь отправь фото.")
 
 @bot.message_handler(content_types=["photo"])
-def handle(msg):
+def handle_photo(message):
     try:
-        prompt = user_prompt.get(msg.chat.id)
-        if not prompt:
-            bot.send_message(msg.chat.id, "Сначала напиши текст, потом фото.")
+        if message.chat.id not in user_prompts:
+            bot.send_message(message.chat.id, "❗ Сначала напиши, что нужно сделать с фото.")
             return
 
-        # download photo
-        file_id = msg.photo[-1].file_id
-        file_info = bot.get_file(file_id)
-        img = requests.get(
-            f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
-        ).content
+        prompt = user_prompts[message.chat.id]
 
-        # upload
-        image_url = upload_to_telegraph(img)
+        file_info = bot.get_file(message.photo[-1].file_id)
+        photo_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
 
-        # send to Replicate
-        payload = {
-            "version": "lucataco/nano-banana",
-            "input": {
-                "image": image_url,
+        bot.send_message(message.chat.id, "🎨 Обрабатываю изображение...")
+
+        output = replicate_client.run(
+            "cjwbw/nano-banana:latest",
+            input={
+                "image": photo_url,
                 "prompt": prompt
             }
-        }
+        )
 
-        r = requests.post("https://api.replicate.com/v1/predictions", json=payload, headers=headers)
-        j = r.json()
+        result_url = output[0]
 
-        if "id" not in j:
-            bot.send_message(msg.chat.id, f"❌ Replicate error:\n{j}")
-            return
-
-        pid = j["id"]
-
-        # poll
-        for _ in range(30):
-            time.sleep(2)
-            s = requests.get(
-                f"https://api.replicate.com/v1/predictions/{pid}",
-                headers=headers
-            ).json()
-
-            if not isinstance(s, dict):
-                bot.send_message(msg.chat.id, "❌ Replicate returned invalid response")
-                return
-
-            if s["status"] == "succeeded":
-                output = s["output"]
-
-                if isinstance(output, list):
-                    bot.send_photo(msg.chat.id, output[0])
-                elif isinstance(output, str):
-                    bot.send_photo(msg.chat.id, output)
-                else:
-                    bot.send_message(msg.chat.id, f"❌ Unexpected output: {output}")
-
-                return
-
-            if s["status"] == "failed":
-                bot.send_message(msg.chat.id, f"❌ Generation failed:\n{s}")
-                return
-
-        bot.send_message(msg.chat.id, "❌ Timeout. Nano-Banana did not respond.")
+        bot.send_photo(message.chat.id, result_url)
+        del user_prompts[message.chat.id]
 
     except Exception as e:
-        bot.send_message(msg.chat.id, f"❌ Ошибка: {e}")
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
 
-bot.infinity_polling(skip_pending=True)
+# -------------------
+# Webhook Server
+# -------------------
+
+app = Flask(__name__)
+
+@app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "ok", 200
+
+@app.route("/")
+def home():
+    return "Nano-Banana bot is running"
+
+# -------------------
+# Start Webhook
+# -------------------
+
+bot.remove_webhook()
+bot.set_webhook(url=f"https://nano-banana-bot-hapn.onrender.com/webhook/{BOT_TOKEN}")
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
