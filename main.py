@@ -8,7 +8,7 @@ REPLICATE_KEY = os.environ["REPLICATE_KEY"]
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-HEADERS = {
+headers = {
     "Authorization": f"Token {REPLICATE_KEY}",
     "Content-Type": "application/json"
 }
@@ -20,66 +20,85 @@ def start(msg):
     bot.send_message(
         msg.chat.id,
         "🍌 Nano-Banana\n\n"
-        "Напиши, как изменить фото, потом отправь изображение."
+        "1️⃣ Напиши, как изменить фото\n"
+        "2️⃣ Потом отправь фото"
     )
 
 @bot.message_handler(content_types=["text"])
 def save_prompt(msg):
     user_prompt[msg.chat.id] = msg.text
-    bot.send_message(msg.chat.id, "📸 Теперь отправь фото.")
+    bot.send_message(msg.chat.id, "📸 Теперь отправь фото")
 
-def upload_to_telegraph(image_bytes):
-    r = requests.post("https://telegra.ph/upload", files={"file": ("image.jpg", image_bytes)})
-    return "https://telegra.ph" + r.json()[0]["src"]
+def upload_to_telegraph(img):
+    r = requests.post("https://telegra.ph/upload", files={"file": ("img.jpg", img)})
+    j = r.json()
+    return "https://telegra.ph" + j[0]["src"]
 
 @bot.message_handler(content_types=["photo"])
-def handle_photo(msg):
+def handle(msg):
     try:
         prompt = user_prompt.get(msg.chat.id)
         if not prompt:
-            bot.send_message(msg.chat.id, "Сначала напиши, как изменить изображение.")
+            bot.send_message(msg.chat.id, "Сначала напиши текст, потом фото.")
             return
 
-        # download from Telegram
+        # download photo
         file_id = msg.photo[-1].file_id
         file_info = bot.get_file(file_id)
-        image_bytes = requests.get(
+        img = requests.get(
             f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
         ).content
 
-        # upload to telegraph
-        image_url = upload_to_telegraph(image_bytes)
+        # upload
+        image_url = upload_to_telegraph(img)
 
+        # send to Replicate
         payload = {
-            "model": "lucataco/nano-banana",
+            "version": "lucataco/nano-banana",
             "input": {
                 "image": image_url,
                 "prompt": prompt
             }
         }
 
-        r = requests.post("https://api.replicate.com/v1/predictions", headers=HEADERS, json=payload)
+        r = requests.post("https://api.replicate.com/v1/predictions", json=payload, headers=headers)
+        j = r.json()
 
-        if r.status_code != 201:
-            raise Exception(r.text)
+        if "id" not in j:
+            bot.send_message(msg.chat.id, f"❌ Replicate error:\n{j}")
+            return
 
-        prediction_id = r.json()["id"]
+        pid = j["id"]
 
-        while True:
-            status = requests.get(
-                f"https://api.replicate.com/v1/predictions/{prediction_id}",
-                headers=HEADERS
+        # poll
+        for _ in range(30):
+            time.sleep(2)
+            s = requests.get(
+                f"https://api.replicate.com/v1/predictions/{pid}",
+                headers=headers
             ).json()
 
-            if status["status"] == "succeeded":
-                bot.send_photo(msg.chat.id, status["output"][0])
+            if not isinstance(s, dict):
+                bot.send_message(msg.chat.id, "❌ Replicate returned invalid response")
                 return
 
-            if status["status"] == "failed":
-                bot.send_message(msg.chat.id, "❌ Generation failed")
+            if s["status"] == "succeeded":
+                output = s["output"]
+
+                if isinstance(output, list):
+                    bot.send_photo(msg.chat.id, output[0])
+                elif isinstance(output, str):
+                    bot.send_photo(msg.chat.id, output)
+                else:
+                    bot.send_message(msg.chat.id, f"❌ Unexpected output: {output}")
+
                 return
 
-            time.sleep(2)
+            if s["status"] == "failed":
+                bot.send_message(msg.chat.id, f"❌ Generation failed:\n{s}")
+                return
+
+        bot.send_message(msg.chat.id, "❌ Timeout. Nano-Banana did not respond.")
 
     except Exception as e:
         bot.send_message(msg.chat.id, f"❌ Ошибка: {e}")
