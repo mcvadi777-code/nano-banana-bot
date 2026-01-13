@@ -1,6 +1,7 @@
 import telebot
 import requests
 import os
+import time
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 REPLICATE_KEY = os.environ["REPLICATE_KEY"]
@@ -16,7 +17,12 @@ user_prompt = {}
 
 @bot.message_handler(commands=["start"])
 def start(msg):
-    bot.send_message(msg.chat.id, "🍌 Nano-Banana\n\nНапиши, как изменить фото, затем пришли изображение.")
+    bot.send_message(
+        msg.chat.id,
+        "🍌 Nano-Banana Bot\n\n"
+        "1️⃣ Напиши, как изменить фото (например: «киношный чб портрет»)\n"
+        "2️⃣ Потом отправь фото"
+    )
 
 @bot.message_handler(content_types=["text"])
 def save_prompt(msg):
@@ -38,12 +44,17 @@ def handle_photo(msg):
             bot.send_message(msg.chat.id, "Сначала напиши, как изменить изображение.")
             return
 
+        # 1. Скачать фото из Telegram
         file_id = msg.photo[-1].file_id
         file_info = bot.get_file(file_id)
-        image = requests.get(f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}").content
+        image_bytes = requests.get(
+            f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+        ).content
 
-        image_url = upload_to_telegraph(image)
+        # 2. Залить на telegra.ph чтобы получить URL
+        image_url = upload_to_telegraph(image_bytes)
 
+        # 3. Отправить в Nano-Banana через Replicate
         payload = {
             "version": "lucataco/nano-banana",
             "input": {
@@ -52,9 +63,17 @@ def handle_photo(msg):
             }
         }
 
-        r = requests.post("https://api.replicate.com/v1/predictions", json=payload, headers=headers)
-        prediction_id = r.json()["id"]
+        r = requests.post(
+            "https://api.replicate.com/v1/predictions",
+            json=payload,
+            headers=headers,
+            timeout=30
+        )
 
+        data = r.json()
+        prediction_id = data["id"]
+
+        # 4. Ждём результат
         while True:
             status = requests.get(
                 f"https://api.replicate.com/v1/predictions/{prediction_id}",
@@ -62,13 +81,15 @@ def handle_photo(msg):
             ).json()
 
             if status["status"] == "succeeded":
-                img_url = status["output"][0]
-                bot.send_photo(msg.chat.id, img_url)
+                result_image = status["output"][0]   # Replicate всегда возвращает список URL
+                bot.send_photo(msg.chat.id, result_image)
                 return
 
             if status["status"] == "failed":
-                bot.send_message(msg.chat.id, "❌ Generation failed")
+                bot.send_message(msg.chat.id, "❌ Генерация не удалась.")
                 return
+
+            time.sleep(2)
 
     except Exception as e:
         bot.send_message(msg.chat.id, f"❌ Ошибка: {e}")
